@@ -1,0 +1,132 @@
+#!/usr/bin/env python
+
+import fcntl, os, re, subprocess, sys, time
+
+def run(zone):
+
+  # ami-2d4aa444 is Ubuntu 10.04, us-east-1, 32-bit, instance storage,
+  # http://uec-images.ubuntu.com/releases/10.04/release/
+  # TODO Choose AMI based on zone
+  p = subprocess.Popen(['ec2-run-instances', 'ami-2d4aa444', '-k', 'ec2-keypair', '-z', zone], stdout=subprocess.PIPE)
+  (stdout, stderr) = p.communicate()
+
+  if 0 != p.returncode:
+    os.remove('/tmp/ec2sync')
+    sys.exit('ec2-run-instances exited with return code %d' % (p.returncode))
+
+  match = re.search('INSTANCE\\s+(\\S+)', stdout)
+  if not match:
+    os.remove('/tmp/ec2sync')
+    sys.exit('Couldn\'t parse ec2-run-instances output')
+
+  return match.group(1)
+
+def describe(instance):
+  p = subprocess.Popen(['ec2-describe-instances', instance], stdout=subprocess.PIPE)
+  (stdout, stderr) = p.communicate()
+
+  if 0 != p.returncode:
+    terminate(instance)
+    sys.exit('ec2-describe-instances exited with return code %d' % (p.returncode))
+
+  match = re.search('INSTANCE(?:\\s+(\\S+)){3}', stdout)
+  if not match:
+    terminate(instance)
+    sys.exit('Couldn\'t parse ec2-describe-instances output')
+
+  return match.group(1)
+
+def terminate(instance):
+  p = subprocess.Popen(['ec2-terminate-instances', instance])
+  p.wait()
+
+  if 0 != p.returncode:
+    os.remove('/tmp/ec2sync')
+    sys.exit('ec2-terminate-instances exited with return code %d' % (p.returncode))
+
+  os.remove('/tmp/ec2sync')
+
+# Check arguments and print usage
+if 4 != len(sys.argv):
+  print """
+%s requires three arguments,
+
+  [1] VOLUME     (available EBS volume)
+  [2] KEYPAIR    (path to the key pair)
+  [3] REPOS-PATH (path to the repository on VOLUME)
+""" % sys.argv[0]
+
+  sys.exit(1)
+
+# flock
+
+fd = open('/tmp/ec2sync', 'w')
+fcntl.flock(fd, fcntl.LOCK_EX)
+
+# ec2-describe-volumes
+
+p = subprocess.Popen(['ec2-describe-volumes', sys.argv[1]], stdout=subprocess.PIPE)
+(stdout, stderr) = p.communicate()
+
+if 0 != p.returncode:
+  os.remove('/tmp/ec2sync')
+  sys.exit('ec2-describe-volumes exited with return code %d' % (p.returncode))
+
+match = re.search('VOLUME(?:\\s+(\\S+)){3}', stdout)
+if not match:
+  os.remove('/tmp/ec2sync')
+  sys.exit('Couldn\'t parse ec2-describe-instances output')
+
+# ec2-run-instances
+
+instance = run(match.group(1))
+
+# ec2-describe-instances
+
+start = time.time()
+
+hostname = describe(instance)
+while 'pending' == hostname and 300 > time.time() - start:
+  hostname = describe(instance)
+
+if 'pending' == hostname:
+  terminate(instance)
+  sys.exit('Failed to start in less than 60 seconds')
+
+# ec2-attach-volume
+
+p = subprocess.Popen(['ec2-attach-volume', sys.argv[1], '-d', '/dev/sdf', '-i', instance], stdout=subprocess.PIPE)
+(stdout, stderr) = p.communicate()
+
+if 0 != p.returncode:
+  terminate(instance)
+  sys.exit('ec2-attach-volume exited with return code %d' % (p.returncode))
+
+# mount
+
+p = subprocess.Popen(['ssh', '-i', sys.argv[2], '-o', 'StrictHostKeyChecking no', 'ubuntu@%s' % (hostname), 'sudo mount /dev/sdf /mnt'])
+p.wait()
+
+if 0 != p.returncode:
+  terminate(instance)
+  sys.exit('ssh exited with return code %d' % (p.returncode))
+
+# svnsync
+
+p = subprocess.Popen(['ssh', '-i', sys.argv[2], '-o', 'StrictHostKeyChecking no', 'ubuntu@%s' % (hostname), 'sudo aptitude -DRy install subversion'])
+p.wait()
+
+if 0 != p.returncode:
+  terminate(instance)
+  sys.exit('ssh exited with return code %d' % (p.returncode))
+
+p = subprocess.Popen(['svnsync', 'sync', 'svn+ssh://ubuntu@%s/mnt%s' % (hostname, sys.argv[3])], env={'SVN_SSH': 'ssh -i %s -o "StrictHostKeyChecking no"' % (sys.argv[2])})
+p.wait()
+
+if 0 != p.returncode:
+  terminate(instance)
+  sys.exit('svnsync exited with return code %d' % (p.returncode))
+
+# ec2-terminate-instances
+
+terminate(instance)
