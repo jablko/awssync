@@ -11,12 +11,12 @@ def run(zone):
   (stdout, stderr) = p.communicate()
 
   if 0 != p.returncode:
-    os.remove('/tmp/ec2sync')
+    os.remove('/tmp/awssync')
     sys.exit('ec2-run-instances exited with return code %d' % (p.returncode))
 
   match = re.search('INSTANCE\\s+(\\S+)', stdout)
   if not match:
-    os.remove('/tmp/ec2sync')
+    os.remove('/tmp/awssync')
     sys.exit('Couldn\'t parse ec2-run-instances output')
 
   return match.group(1)
@@ -41,10 +41,10 @@ def terminate(instance):
   p.wait()
 
   if 0 != p.returncode:
-    os.remove('/tmp/ec2sync')
+    os.remove('/tmp/awssync')
     sys.exit('ec2-terminate-instances exited with return code %d' % (p.returncode))
 
-  os.remove('/tmp/ec2sync')
+  os.remove('/tmp/awssync')
 
 # Check arguments and print usage
 if 4 != len(sys.argv):
@@ -60,7 +60,7 @@ if 4 != len(sys.argv):
 
 # flock
 
-fd = open('/tmp/ec2sync', 'w')
+fd = open('/tmp/awssync', 'w')
 fcntl.flock(fd, fcntl.LOCK_EX)
 
 # ec2-describe-volumes
@@ -69,12 +69,12 @@ p = subprocess.Popen(['ec2-describe-volumes', sys.argv[1]], stdout=subprocess.PI
 (stdout, stderr) = p.communicate()
 
 if 0 != p.returncode:
-  os.remove('/tmp/ec2sync')
+  os.remove('/tmp/awssync')
   sys.exit('ec2-describe-volumes exited with return code %d' % (p.returncode))
 
 match = re.search('VOLUME(?:\\s+(\\S+)){3}', stdout)
 if not match:
-  os.remove('/tmp/ec2sync')
+  os.remove('/tmp/awssync')
   sys.exit('Couldn\'t parse ec2-describe-instances output')
 
 # ec2-run-instances
